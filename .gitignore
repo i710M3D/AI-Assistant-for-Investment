@@ -1,0 +1,10 @@
+agri_screening_ai_app/data/
+agri_screening_ai_app/outputs/
+agri_screening_dataset.zip
+Business_Case_AI_Intern_Agri_Screening.docx
+
+# Local/private files
+.env
+.venv/
+__pycache__/
+*.pyc
