@@ -7,12 +7,24 @@ from src.bootstrap import get_system
 from src.rag import answer_question
 
 
+DATASET_DIR = "data/dataset"
+VIEWS = ["Company Scoring Dashboard", "Analyst Chat", "Monitoring Alerts", "Company Notes"]
+SCORE_COLUMNS = [2.4, 1, 1.8, 1.2, 1, 1]
+ALERT_COLUMNS = [
+    "company_name",
+    "alert_type",
+    "trigger_value",
+    "source_reference",
+    "evidence",
+    "recommended_action",
+]
+
 st.set_page_config(page_title="Agri Screening AI", layout="wide")
 
 
 @st.cache_resource(show_spinner="Building local retrieval index...")
 def load_system():
-    return get_system("data/dataset")
+    return get_system(DATASET_DIR)
 
 
 def badge(flag: str) -> str:
@@ -24,36 +36,24 @@ def badge(flag: str) -> str:
     )
 
 
-try:
-    system = load_system()
-except Exception as exc:
-    st.error(f"Could not load the screening dataset: {exc}")
-    st.stop()
-scores = system["scores"]
-alerts = system["alerts"]
-notes = system["notes"]
-index = system["index"]
+def alert_counts_by_company(alerts: list[dict]) -> dict[str, int]:
+    if not alerts:
+        return {}
+    return pd.DataFrame(alerts).groupby("company_name").size().to_dict()
 
-st.title("AI-Assisted Company Screening")
-st.caption(f"Retrieval backend: {index.backend}. OpenAI LLM answers are used when configured; local fallback remains available.")
 
-view = st.sidebar.radio(
-    "View",
-    ["Company Scoring Dashboard", "Analyst Chat", "Monitoring Alerts", "Company Notes"],
-)
-
-if view == "Company Scoring Dashboard":
+def show_scores(scores: list[dict], alerts: list[dict]) -> None:
     st.subheader("Ranked Company Scores")
     with st.expander("Scoring formula"):
         st.write(
             "Total score is the deterministic sum of four 25-point dimensions: financial, technology, market, and ESG. "
             "Financial scoring uses CSV metrics for revenue CAGR, gross margin, runway, and burn efficiency. "
-            "Technology, market, and ESG scores use factsheet/report evidence and do not copy analyst flags."
+            "Technology, market, and ESG scores use factsheet evidence."
         )
-    alert_counts = pd.DataFrame(alerts).groupby("company_name").size().to_dict() if alerts else {}
+    alert_counts = alert_counts_by_company(alerts)
     for row in scores:
         with st.container(border=True):
-            cols = st.columns([2.4, 1, 1.8, 1.2, 1, 1])
+            cols = st.columns(SCORE_COLUMNS)
             cols[0].markdown(f"**{row['company_name']}**")
             cols[1].write(row["country"])
             cols[2].write(row["sub_sector"])
@@ -66,7 +66,8 @@ if view == "Company Scoring Dashboard":
                 f"Market {row['market_score']}/25 | ESG {row['esg_score']}/25"
             )
 
-elif view == "Analyst Chat":
+
+def show_chat(index) -> None:
     st.subheader("Analyst Question Answering")
     default = "Which companies have an active fundraising process? What are the expected amounts?"
     question = st.text_input("Ask a question about the corpus", value=default)
@@ -90,21 +91,13 @@ elif view == "Analyst Chat":
         else:
             st.info("No source chunks met the relevance threshold.")
 
-elif view == "Monitoring Alerts":
+
+def show_alerts(alerts: list[dict]) -> None:
     st.subheader("Active Monitoring Alerts")
     if alerts:
         df = pd.DataFrame(alerts)
         st.dataframe(
-            df[
-                [
-                    "company_name",
-                    "alert_type",
-                    "trigger_value",
-                    "source_reference",
-                    "evidence",
-                    "recommended_action",
-                ]
-            ],
+            df[ALERT_COLUMNS],
             use_container_width=True,
             hide_index=True,
         )
@@ -118,7 +111,34 @@ elif view == "Monitoring Alerts":
     else:
         st.success("No active alerts.")
 
-else:
+
+def show_notes(scores: list[dict], notes: dict[str, str]) -> None:
     st.subheader("Structured Company Notes")
     company = st.selectbox("Select company", [row["company_name"] for row in scores])
     st.markdown(notes[company])
+
+
+try:
+    system = load_system()
+except Exception as exc:
+    st.error(f"Could not load the screening dataset: {exc}")
+    st.stop()
+
+scores = system["scores"]
+alerts = system["alerts"]
+notes = system["notes"]
+index = system["index"]
+
+st.title("AI-Assisted Company Screening")
+st.caption(f"Retrieval backend: {index.backend}. OpenAI answers are used when configured; local fallback remains available.")
+
+view = st.sidebar.radio("View", VIEWS)
+
+if view == "Company Scoring Dashboard":
+    show_scores(scores, alerts)
+elif view == "Analyst Chat":
+    show_chat(index)
+elif view == "Monitoring Alerts":
+    show_alerts(alerts)
+else:
+    show_notes(scores, notes)

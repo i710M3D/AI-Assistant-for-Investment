@@ -9,6 +9,13 @@ from .scoring import compute_scores
 from .monitoring import generate_alerts
 
 
+ACTION_BY_FLAG = {
+    "PRIORITY": "ADVANCE TO DD",
+    "WATCH": "MONITOR 90 DAYS",
+    "LOW": "DEPRIORITISE",
+}
+
+
 def get_system(dataset_dir: str | Path = "data/dataset") -> dict[str, Any]:
     index = build_index(dataset_dir)
     scores = compute_scores(dataset_dir)
@@ -38,7 +45,22 @@ def _signals(company: str, index: LocalVectorIndex, positive: bool = True) -> li
 
 
 def recommended_action(score_flag: str) -> str:
-    return {"PRIORITY": "ADVANCE TO DD", "WATCH": "MONITOR 90 DAYS", "LOW": "DEPRIORITISE"}[score_flag]
+    return ACTION_BY_FLAG[score_flag]
+
+
+def fallback_thesis(row: dict[str, Any]) -> str:
+    company = row["company_name"]
+    return (
+        f"{company} screens as {row['score_flag']} with a composite score of {row['total_score']}/100. "
+        f"The strongest measurable factors are revenue CAGR of {row['revenue_cagr_2023_2025_pct']}%, "
+        f"{row['gross_margin_pct']}% gross margin, and {row['runway_months']} months of runway. "
+        f"The score also reflects technology, market, and ESG evidence from the company factsheet."
+    )
+
+
+def investment_thesis(company: str, row: dict[str, Any], index: LocalVectorIndex) -> str:
+    answer = answer_question(f"Give an investment thesis for {company}", index, top_k=4, use_llm=False)["answer"]
+    return fallback_thesis(row) if answer.startswith("I could not") else answer
 
 
 def generate_company_note(row: dict[str, Any], alerts: list[dict[str, Any]], index: LocalVectorIndex) -> str:
@@ -46,14 +68,7 @@ def generate_company_note(row: dict[str, Any], alerts: list[dict[str, Any]], ind
     company_alerts = [a for a in alerts if a["company_name"] == company]
     positives = _signals(company, index, positive=True)
     risks = _signals(company, index, positive=False)
-    thesis = answer_question(f"Give an investment thesis for {company}", index, top_k=4, use_llm=False)["answer"]
-    if thesis.startswith("I could not"):
-        thesis = (
-            f"{company} screens as {row['score_flag']} with a composite score of {row['total_score']}/100. "
-            f"The strongest measurable factors are revenue CAGR of {row['revenue_cagr_2023_2025_pct']}%, "
-            f"{row['gross_margin_pct']}% gross margin, and {row['runway_months']} months of runway. "
-            f"The score also reflects technology, market, and ESG evidence retrieved from the corpus."
-        )
+    thesis = investment_thesis(company, row, index)
 
     lines = [
         f"# {company}",

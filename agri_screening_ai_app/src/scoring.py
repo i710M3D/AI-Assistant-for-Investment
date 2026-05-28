@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 import csv
-import math
 import re
 from pathlib import Path
 from typing import Any
 
 from .ingestion import COMPANY_NAMES
+
+FINANCIAL_FIELDS = [
+    "fy_year",
+    "revenue_eur_k",
+    "revenue_growth_pct",
+    "gross_margin_pct",
+    "ebitda_eur_k",
+    "arr_eur_k",
+    "cash_eur_k",
+    "burn_eur_k_monthly",
+    "runway_months",
+    "fte_count",
+]
 
 
 def _clamp(value: float, low: float = 0, high: float = 100) -> float:
@@ -29,11 +41,7 @@ def read_csv(path: Path) -> list[dict[str, str]]:
 def load_financials(dataset_dir: str | Path) -> list[dict[str, Any]]:
     rows = read_csv(Path(dataset_dir) / "market_data" / "companies_financials_2023_2025.csv")
     for row in rows:
-        for field in [
-            "fy_year", "revenue_eur_k", "revenue_growth_pct", "gross_margin_pct",
-            "ebitda_eur_k", "arr_eur_k", "cash_eur_k", "burn_eur_k_monthly",
-            "runway_months", "fte_count",
-        ]:
+        for field in FINANCIAL_FIELDS:
             row[field] = float(row[field])
     return rows
 
@@ -147,6 +155,42 @@ def flag_from_score(score: float) -> str:
     return "LOW"
 
 
+def score_company(
+    company: str,
+    latest_row: dict[str, Any],
+    company_financials: list[dict[str, Any]],
+    dataset_dir: str | Path,
+) -> dict[str, Any]:
+    text = factsheet_text(dataset_dir, company)
+    inputs = extract_score_inputs(text)
+    cagr = revenue_cagr(company_financials)
+
+    financial = financial_score(latest_row, cagr)
+    technology = technology_score(text, inputs)
+    market = market_score(text, latest_row)
+    esg = esg_score(text, inputs)
+    total = round(financial + technology + market + esg, 2)
+
+    return {
+        "company_name": company,
+        "company_id": latest_row["company_id"],
+        "country": latest_row["country"],
+        "sub_sector": latest_row["sub_sector"],
+        "revenue_2025_eur_k": latest_row["revenue_eur_k"],
+        "revenue_growth_pct": latest_row["revenue_growth_pct"],
+        "revenue_cagr_2023_2025_pct": round(cagr, 1),
+        "gross_margin_pct": latest_row["gross_margin_pct"],
+        "runway_months": latest_row["runway_months"],
+        "burn_eur_k_monthly": latest_row["burn_eur_k_monthly"],
+        "financial_score": financial,
+        "technology_score": technology,
+        "market_score": market,
+        "esg_score": esg,
+        "total_score": total,
+        "score_flag": flag_from_score(total),
+    }
+
+
 def compute_scores(dataset_dir: str | Path = "data/dataset") -> list[dict[str, Any]]:
     financials = load_financials(dataset_dir)
     latest = latest_by_company(financials)
@@ -155,33 +199,5 @@ def compute_scores(dataset_dir: str | Path = "data/dataset") -> list[dict[str, A
     for company in COMPANY_NAMES:
         if company not in latest:
             raise ValueError(f"Missing financial rows for required company: {company}")
-        row = latest[company]
-        text = factsheet_text(dataset_dir, company)
-        inputs = extract_score_inputs(text)
-        cagr = revenue_cagr(by_company[company])
-        fin = financial_score(row, cagr)
-        tech = technology_score(text, inputs)
-        market = market_score(text, row)
-        esg = esg_score(text, inputs)
-        total = round(fin + tech + market + esg, 2)
-        rows.append(
-            {
-                "company_name": company,
-                "company_id": row["company_id"],
-                "country": row["country"],
-                "sub_sector": row["sub_sector"],
-                "revenue_2025_eur_k": row["revenue_eur_k"],
-                "revenue_growth_pct": row["revenue_growth_pct"],
-                "revenue_cagr_2023_2025_pct": round(cagr, 1),
-                "gross_margin_pct": row["gross_margin_pct"],
-                "runway_months": row["runway_months"],
-                "burn_eur_k_monthly": row["burn_eur_k_monthly"],
-                "financial_score": fin,
-                "technology_score": tech,
-                "market_score": market,
-                "esg_score": esg,
-                "total_score": total,
-                "score_flag": flag_from_score(total),
-            }
-        )
+        rows.append(score_company(company, latest[company], by_company[company], dataset_dir))
     return sorted(rows, key=lambda r: r["total_score"], reverse=True)

@@ -1,13 +1,13 @@
-# AI-Assisted Company Screening System
+# Agri-Tech Company Screening Prototype
 
-This project is a local Streamlit prototype for screening agri-tech companies for an agricultural sector investment fund. It ingests synthetic company factsheets, sector reports, news digests, financial CSVs, and funding CSVs, then provides local retrieval-augmented question answering, transparent company scoring, monitoring alerts, and structured analyst notes.
+Local Streamlit app for screening agri-tech companies. It loads synthetic factsheets, sector reports, news digests, financial CSVs, and funding CSVs, then builds a retrieval index used by chat, scoring, monitoring alerts, and company notes.
 
 ## Architecture
 
 - `src/ingestion.py`: loads TXT and CSV sources, chunks long text with overlap, turns CSV rows into text chunks, and attaches metadata including filename, document type, company, date, and chunk id.
 - `src/rag.py`: builds a local retrieval index. It uses `sentence-transformers` plus FAISS when available, and falls back to scikit-learn TF-IDF when those packages are unavailable.
 - `src/scoring.py`: computes deterministic 0-100 company scores across Financial, Technology, Market, and ESG dimensions.
-- `src/monitoring.py`: applies configurable alert rules and retrieves textual evidence from the RAG corpus where possible.
+- `src/monitoring.py`: applies alert rules and retrieves supporting text from the RAG corpus.
 - `src/bootstrap.py`: assembles the index, scores, alerts, and generated company notes.
 - `app.py`: Streamlit web interface with four analyst views.
 - `generate_outputs.py`: exports scores, alerts, sample RAG answers, and Markdown company notes.
@@ -29,7 +29,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Using OpenAI LLM for RAG answers
+## OpenAI Answers
 
 Create a `.env` file in the project root:
 
@@ -45,7 +45,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The Analyst Chat retrieves local source chunks first, then uses the OpenAI Responses API to generate a grounded answer from those chunks. If no API key is provided, or if the OpenAI call fails, the app falls back to the local extractive answer generator and still shows citations.
+The chat retrieves local source chunks first, then uses the OpenAI Responses API when `OPENAI_API_KEY` is set. Without a key, or if the API call fails, it uses the local extractive fallback and still shows sources.
 
 ## Generate Outputs
 
@@ -90,7 +90,7 @@ Market score:
 ESG score:
 
 - starts from the factsheet ESG input as a proxy for environmental, social, and governance evidence
-- adjusts for verification, certification, and governance weaknesses using ESG framework logic
+- adjusts for verification, certification, and governance weaknesses using retrieved ESG framework, factsheet, and news evidence
 
 The final flag is derived only from the computed score:
 
@@ -108,11 +108,11 @@ The final flag is derived only from the computed score:
 - `STRATEGIC_EXIT`: M&A, acquisition talks, or strategic sale process detected in news
 - `SCORE_PRIORITY`: composite score >= 70
 
-Each alert includes company name, alert type, trigger value, source reference, evidence quote or figure, and recommended action.
+Each alert includes the company, alert type, trigger value, source reference, evidence excerpt, and recommended action.
 
 ## Design Choices
 
-The prototype is intentionally grounded and explainable. Retrieval is local, LLM answers are constrained to returned chunks, and the six common interview questions retain deterministic fallback handling to make demos repeatable when the LLM is unavailable. The scoring layer uses financial CSV values plus factsheet/report evidence rather than copying analyst flags.
+The app keeps retrieval local and constrains generated answers to retrieved chunks. The common interview questions have deterministic fallback answers so demos remain repeatable when the LLM is unavailable. Scoring uses financial CSV values plus factsheet evidence rather than copied analyst flags.
 
 Streamlit was chosen because it supports a complete local analyst workflow with minimal app boilerplate: dashboards, chat-style Q&A, tables, and Markdown notes can all run from one command.
 

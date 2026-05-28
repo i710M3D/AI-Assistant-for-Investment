@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,12 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
 MIN_RELEVANCE_SCORE = 0.03
+TOKEN_PATTERN = r"[a-zA-Z][a-zA-Z0-9]+"
+SOURCE_EXCERPT_TERMS = re.compile(
+    r"\b(Series|target|risk|revenue|irrigation|water|validated|third-party|Verra|ESG|CFO|blockchain)\b",
+    re.I,
+)
+SOURCE_HEADER_PATTERN = re.compile(r"\b(Document type|Source|COMPANY FACTSHEET|SCORING GUIDE)\b", re.I)
 
 SYSTEM_PROMPT = """You are an investment research assistant for an agricultural impact investment fund.
 Answer the analyst's question using ONLY the retrieved source chunks provided.
@@ -48,7 +54,6 @@ class LocalVectorIndex:
                 raise RuntimeError("sentence-transformers model is not cached locally")
             from sentence_transformers import SentenceTransformer
             import faiss
-            import numpy as np
 
             self.model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", local_files_only=True)
             vectors = self.model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
@@ -84,8 +89,6 @@ class LocalVectorIndex:
             return []
 
         if self.backend == "sentence-transformers/faiss":
-            import numpy as np
-
             query_vector = self.model.encode([query], normalize_embeddings=True).astype("float32")
             if company:
                 scores = (self.embeddings[candidate_indices] @ query_vector[0]).tolist()
@@ -173,15 +176,7 @@ INTERVIEW_RETRIEVAL_QUERIES = {
 }
 
 
-def _matched_interview_answer(question: str) -> str | None:
-    q = question.lower().strip()
-    for key, answer in INTERVIEW_QUESTIONS.items():
-        if key in q:
-            return answer
-    return None
-
-
-def _matched_interview_key(question: str) -> str | None:
+def _matched_question_key(question: str) -> str | None:
     q = question.lower().strip()
     for key in INTERVIEW_QUESTIONS:
         if key in q:
@@ -189,18 +184,26 @@ def _matched_interview_key(question: str) -> str | None:
     return None
 
 
+def _known_answer(question: str) -> str | None:
+    key = _matched_question_key(question)
+    return INTERVIEW_QUESTIONS.get(key) if key else None
+
+
+def _terms(text: str, min_length: int = 3) -> set[str]:
+    return {term for term in re.findall(TOKEN_PATTERN, text.lower()) if len(term) >= min_length}
+
+
 def _keyword_score(query: str, result: dict[str, Any]) -> int:
-    query_terms = {
-        t
-        for t in re.findall(r"[a-zA-Z][a-zA-Z0-9]+", query.lower())
-        if len(t) > 2
-    }
-    text_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]+", result["text"].lower()))
-    return len(query_terms & text_terms)
+    return len(_terms(query) & _terms(result["text"]))
+
+
+def _chunk_id(result: dict[str, Any]) -> tuple[str | None, int | None]:
+    metadata = result["metadata"]
+    return metadata.get("source"), metadata.get("chunk_id")
 
 
 def _search_for_question(question: str, index: LocalVectorIndex, top_k: int) -> list[dict[str, Any]]:
-    key = _matched_interview_key(question)
+    key = _matched_question_key(question)
     if not key:
         return index.search(question, top_k=top_k)
 
@@ -213,8 +216,7 @@ def _search_for_question(question: str, index: LocalVectorIndex, top_k: int) -> 
         for result in ranked_candidates[:1]:
             if company:
                 result = {**result, "metadata": {**result["metadata"], "company": company}}
-            metadata = result["metadata"]
-            identity = (metadata.get("source"), metadata.get("chunk_id"))
+            identity = _chunk_id(result)
             if identity not in seen:
                 seen.add(identity)
                 merged.append(result)
@@ -222,8 +224,7 @@ def _search_for_question(question: str, index: LocalVectorIndex, top_k: int) -> 
                 return merged
 
     for result in index.search(question, top_k=top_k):
-        metadata = result["metadata"]
-        identity = (metadata.get("source"), metadata.get("chunk_id"))
+        identity = _chunk_id(result)
         if identity not in seen:
             merged.append(result)
         if len(merged) >= top_k:
@@ -232,7 +233,7 @@ def _search_for_question(question: str, index: LocalVectorIndex, top_k: int) -> 
 
 
 def _best_sentences(question: str, contexts: list[dict[str, Any]], max_sentences: int = 5) -> list[str]:
-    terms = {t for t in re.findall(r"[a-zA-Z][a-zA-Z0-9]+", question.lower()) if len(t) > 3}
+    terms = _terms(question, min_length=4)
     scored: list[tuple[int, str]] = []
     for result in contexts:
         sentences = re.split(r"(?<=[.!?])\s+|\n- ", result["text"])
@@ -240,7 +241,7 @@ def _best_sentences(question: str, contexts: list[dict[str, Any]], max_sentences
             clean = re.sub(r"\s+", " ", sentence).strip(" -")
             if len(clean) < 30:
                 continue
-            words = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]+", clean.lower()))
+            words = _terms(clean)
             score = len(terms & words)
             if score:
                 scored.append((score, clean))
@@ -275,9 +276,9 @@ def _format_context_block(retrieved_chunks: list[dict[str, Any]]) -> str:
 
 
 def _fallback_answer(question: str, contexts: list[dict[str, Any]]) -> str:
-    deterministic = _matched_interview_answer(question)
-    if deterministic:
-        return deterministic
+    answer = _known_answer(question)
+    if answer:
+        return answer
 
     sentences = _best_sentences(question, contexts)
     answer = " ".join(sentences) if sentences else "I could not answer this from the available corpus."
@@ -306,11 +307,7 @@ def generate_llm_answer(question: str, retrieved_chunks: list[dict[str, Any]]) -
 
 
 def _excerpt_for_question(question: str, text: str, max_chars: int = 700) -> str:
-    terms = {
-        t
-        for t in re.findall(r"[a-zA-Z][a-zA-Z0-9]+", question.lower())
-        if len(t) > 3
-    }
+    terms = _terms(question, min_length=4)
     units = [
         re.sub(r"\s+", " ", s).strip(" -")
         for s in re.split(r"(?<=[.!?])\s+|\n+|\s+-\s+", text)
@@ -321,11 +318,11 @@ def _excerpt_for_question(question: str, text: str, max_chars: int = 700) -> str
 
     scored = []
     for i, unit in enumerate(units):
-        words = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]+", unit.lower()))
+        words = _terms(unit)
         score = len(terms & words)
-        if re.search(r"\b(Series|target|risk|revenue|irrigation|water|validated|third-party|Verra|ESG|CFO|blockchain)\b", unit, re.I):
+        if SOURCE_EXCERPT_TERMS.search(unit):
             score += 2
-        if re.search(r"\b(Document type|Source|COMPANY FACTSHEET|SCORING GUIDE)\b", unit, re.I):
+        if SOURCE_HEADER_PATTERN.search(unit):
             score -= 2
         scored.append((score, i, unit))
     scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
