@@ -14,8 +14,9 @@ ALERT_COLUMNS = [
     "company_name",
     "alert_type",
     "trigger_value",
-    "source_reference",
-    "evidence",
+    "source_file",
+    "document_type",
+    "source_excerpt",
     "recommended_action",
 ]
 
@@ -105,8 +106,9 @@ def show_alerts(alerts: list[dict]) -> None:
             with st.container(border=True):
                 st.markdown(f"**{alert['alert_type']}** - {alert['company_name']}")
                 st.write(alert["trigger_value"])
-                st.caption(alert["source_reference"])
-                st.write(alert["evidence"])
+                st.caption(f"{alert['source_file']} - {alert['document_type']}")
+                st.markdown("**Source excerpt**")
+                st.write(alert["source_excerpt"])
                 st.info(alert["recommended_action"])
     else:
         st.success("No active alerts.")
